@@ -10,8 +10,6 @@ struct interp_ctx {
 
 #define hl_interp_error(msg) hl_fatal(msg);
 
-#define REG(id, T) (*(T*)(reg_data + function_regs_offsets[id]))
-
 static interp_ctx *global_ctx = NULL;
 
 static inline void hl_copy_type_data(void *restrict dst, void *restrict src, hl_type *type) {
