@@ -233,7 +233,12 @@ static void hl_buffer_rec( hl_buffer *b, vdynamic *v, vlist *stack ) {
 	case HSTRUCT:
 		{
 			hl_type_obj *o = v->t->obj;
-			if( o->rt == NULL || hl_get_obj_proto(v->t)->toStringFun == NULL ) {
+			if(!strcmp(hl_to_utf8(o->name), "String")) {
+				hl_buffer_str(b, ((vstring*)v)->bytes);
+				break;
+			}
+
+			if(true || o->rt == NULL || hl_get_obj_proto(v->t)->toStringFun == NULL ) {
 				if( v->t->kind == HSTRUCT ) hl_buffer_char(b,'@');
 				hl_buffer_str(b,o->name);
 			} else

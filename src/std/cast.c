@@ -154,10 +154,14 @@ HL_PRIM int64 hl_dyn_casti64( void *data, hl_type *t ) {
 
 HL_PRIM void *hl_dyn_castp( void *data, hl_type *t, hl_type *to ) {
 	hl_track_call(HL_TRACK_CAST, on_cast(t,to));
-	if( to->kind == HDYN && hl_is_dynamic(t) )
-		return *(vdynamic**)data;
+	if( to->kind == HDYN && hl_is_dynamic(t) ) {
+		vdynamic *v;
+		memcpy(&v, data, sizeof(vdynamic*));
+		return v;
+	}
 	if( t->kind == HDYN || t->kind == HNULL ) {
-		vdynamic *v = *(vdynamic**)data;
+		vdynamic *v;
+		memcpy(&v, data, sizeof(vdynamic*));
 		if( v == NULL )
 			return NULL;
 		if( to->kind == HNULL && v->t == to->tparam && hl_is_gc_ptr(v) )
@@ -169,8 +173,11 @@ HL_PRIM void *hl_dyn_castp( void *data, hl_type *t, hl_type *to ) {
 		if( v == NULL ) return NULL;
 		t = v->t;
 	}
-	if( t == to || hl_safe_cast(t,to) )
-		return *(void**)data;
+	if( t == to || hl_safe_cast(t,to) ) {
+		void *v;
+		memcpy(&v, data, sizeof(void*));
+		return v;
+	}
 	switch( TK2(t->kind,to->kind) ) {
 	case TK2(HOBJ,HOBJ):
 	case TK2(HSTRUCT,HSTRUCT):

@@ -105,6 +105,7 @@ pub fn build(b: *std.Build) void {
     });
 
     hl_exe.root_module.addRPathSpecial("$ORIGIN"); // TODO: Set rpath depending on option
+    hl_exe.linkSystemLibrary("ffi");
     hl_exe.linkLibrary(hl_lib);
     addGlobalIncludes(b, hl_exe);
     hl_exe.addCSourceFiles(.{

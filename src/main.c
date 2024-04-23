@@ -220,7 +220,6 @@ int main(int argc, pchar *argv[]) {
 		ctx.file_time = pfiletime(ctx.file);
 		hl_setup_reload_check(check_reload,&ctx);
 	}
-	hl_code_free(ctx.code);
 	if( debug_port > 0 && !hl_module_debug(ctx.m,debug_port,debug_wait) ) {
 		fprintf(stderr,"Could not start debugger on port %d",debug_port);
 		return 4;
@@ -242,6 +241,7 @@ int main(int argc, pchar *argv[]) {
 		hl_global_free();
 		return 1;
 	}
+	hl_code_free(ctx.code);
 	hl_module_free(ctx.m);
 	hl_free(&ctx.code->alloc);
 	// do not call hl_unregister_thread() or hl_global_free will display error 

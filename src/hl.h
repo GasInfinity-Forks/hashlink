@@ -173,7 +173,7 @@
 #endif
 
 #ifdef HL_64
-#	define HL_WSIZE 8
+#   define HL_WSIZE 8
 #	define IS_64	1
 #	ifdef HL_VCC
 #		define _PTR_FMT	L"%IX"
@@ -181,7 +181,7 @@
 #		define _PTR_FMT	u"%lX"
 #	endif
 #else
-#	define HL_WSIZE 4
+#   define HL_WSIZE 4
 #	define IS_64	0
 #	ifdef HL_VCC
 #		define _PTR_FMT	L"%IX"
@@ -318,6 +318,16 @@ C_FUNCTION_END
 #endif
 
 // ---- TYPES -------------------------------------------
+
+typedef uint8_t hl_ui8;
+typedef uint16_t hl_ui16;
+typedef int32_t hl_i32;
+typedef int64_t hl_i64;
+typedef float hl_f32;
+typedef double hl_f64;
+typedef unsigned char hl_bool;
+typedef void* hl_ref;
+typedef intmax_t hl_intmax;
 
 typedef enum {
 	HVOID	= 0,
@@ -866,7 +876,7 @@ typedef struct {
 #else
 #	define HL_NO_OPT
 #endif
-
+#define GC_PRINT_ALLOCS_SIZES
 // -------------- EXTRA ------------------------------------
 
 #define hl_fatal(msg)			hl_fatal_error(msg,__FILE__,__LINE__)

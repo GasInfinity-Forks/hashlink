@@ -39,18 +39,18 @@ static hl_module **cur_modules = NULL;
 static int modules_count = 0;
 
 static bool module_resolve_pos( hl_module *m, void *addr, int *fidx, int *fpos ) {
-	int code_pos = ((int)(int_val)((unsigned char*)addr - (unsigned char*)m->jit_code));
+	int code_pos = ((int)(int_val)((unsigned char*)addr - (unsigned char*)m->jit.code));
 	int min, max;
 	hl_debug_infos *dbg;
 	hl_function *fdebug;
-	if( m->jit_debug == NULL )
+	if( m->debug == NULL )
 		return false;
 	// lookup function from code pos
 	min = 0;
 	max = m->code->nfunctions;
 	while( min < max ) {
 		int mid = (min + max) >> 1;
-		hl_debug_infos *p = m->jit_debug + mid;
+		hl_debug_infos *p = m->debug + mid;
 		if( p->start <= code_pos )
 			min = mid + 1;
 		else
@@ -61,7 +61,7 @@ static bool module_resolve_pos( hl_module *m, void *addr, int *fidx, int *fpos )
 	do {
 		min--;
 		*fidx = min;
-		dbg = m->jit_debug + min;
+		dbg = m->debug + min;
 		fdebug = m->code->functions + min;
 	} while( !dbg->offsets );
 	// lookup inside function
@@ -92,7 +92,7 @@ uchar *hl_module_resolve_symbol_full( void *addr, uchar *out, int *outSize, int 
 	hl_module *m = NULL;
 	for(i=0;i<modules_count;i++) {
 		m = cur_modules[i];
-		if( addr >= m->jit_code && addr <= (void*)((char*)m->jit_code + m->codesize) ) break;
+		if( addr >= m->jit.code && addr <= (void*)((char*)m->jit.code + m->jit.code_size) ) break;
 	}
 	if( i == modules_count )
 		return NULL;
@@ -134,10 +134,10 @@ int hl_module_capture_stack_range( void *stack_top, void **stack_ptr, void **out
 	int count = 0;
 	if( modules_count == 1 ) {
 		hl_module *m = cur_modules[0];
-		unsigned char *code = m->jit_code;
-		int code_size = m->codesize;
-		if( m->jit_debug ) {
-			int s = m->jit_debug[0].start;
+		unsigned char *code = m->jit.code;
+		int code_size = m->jit.code_size;
+		if( m->debug ) {
+			int s = m->debug[0].start;
 			code += s;
 			code_size -= s;
 		}
@@ -179,15 +179,15 @@ int hl_module_capture_stack_range( void *stack_top, void **stack_ptr, void **out
 				int i;
 				for(i=0;i<modules_count;i++) {
 					hl_module *m = cur_modules[i];
-					unsigned char *code = m->jit_code;
-					int code_size = m->codesize;
+					unsigned char *code = m->jit.code;
+					int code_size = m->jit.code_size;
 					if( module_addr >= (void*)code && module_addr < (void*)(code + code_size) ) {
 						if( out && count == size ) {
 							stack_ptr = stack_top;
 							break;
 						}
-						if( m->jit_debug ) {
-							int s = m->jit_debug[0].start;
+						if( m->debug ) {
+							int s = m->debug[0].start;
 							code += s;
 							code_size -= s;
 							if( module_addr < (void*)code || module_addr >= (void*)(code + code_size) ) continue;
@@ -474,7 +474,7 @@ static void hl_module_init_indexes( hl_module *m ) {
 
 #ifdef HL_VTUNE
 #include <jitprofiling.h>
-h_bool hl_module_init_vtune( hl_module *m ) {
+hl_bool hl_module_init_vtune( hl_module *m ) {
 	int i;
 	if( !iJIT_IsProfilingActive() )
 		return false;
@@ -511,7 +511,7 @@ h_bool hl_module_init_vtune( hl_module *m ) {
 		int curline = -1;
 		LineNumberInfo *lines = (LineNumberInfo*)malloc(sizeof(LineNumberInfo)*f->nops);
 		int nlines = 0;
-		hl_debug_infos *dbg = m->jit_debug + i;
+		hl_debug_infos *dbg = m->debug + i;
 		jm.source_file_name = m->code->debugfiles[file];
 		for(j=0;j<f->nops;j++) {
 			int file2 = f->debug[j<<1] & 0x7FFFFFFF;
@@ -629,8 +629,9 @@ static void hl_module_add( hl_module *m ) {
 	free(old_modules);
 }
 
-int hl_module_init( hl_module *m, h_bool hot_reload ) {
-	int i;
+int hl_module_init( hl_module *m, hl_bool hot_reload ) {
+	hl_code* code = m->code;
+	#if 0
 	jit_ctx *ctx;
 	// expand globals
 	if( hot_reload ) {
@@ -645,23 +646,38 @@ int hl_module_init( hl_module *m, h_bool hot_reload ) {
 		memset(m->globals_data,0,m->globals_size);
 		memset(m->globals_data + m->globals_size,0xFF,HOT_RELOAD_EXTRA_GLOBALS * sizeof(void*));
 	}
+	// inits
+	if( hot_reload ) m->hash = hl_code_hash_alloc(m->code);
+	#endif
+
 	// RESET globals
-	for(i=0;i<m->code->nglobals;i++) {
+	for(int i=0;i<m->code->nglobals;i++) {
 		hl_type *t = m->code->globals[i];
 		if( t->kind == HFUN ) *(void**)(m->globals_data + m->globals_indexes[i]) = null_function;
 		if( hl_is_ptr(t) )
 			hl_add_root(m->globals_data+m->globals_indexes[i]);
 	}
-	// inits
-	if( hot_reload ) m->hash = hl_code_hash_alloc(m->code);
+
 	hl_module_init_natives(m);
 	hl_module_init_indexes(m);
+
+	#if 1
+	for(int i = 0; i < code->nfunctions; ++i) {
+		hl_function *f = &code->functions[i];
+		m->functions_ptrs[f->findex] = f;
+	}
+
+	interp_ctx* irp_ctx = hl_interp_alloc();
+	hl_interp_init(irp_ctx, m);
+	
+	#endif
+	#if 0
 	// JIT
 	ctx = hl_jit_alloc();
 	if( ctx == NULL )
 		return 0;
 	hl_jit_init(ctx, m);
-	for(i=0;i<m->code->nfunctions;i++) {
+	for(int i=0;i<m->code->nfunctions;i++) {
 		hl_function *f = m->code->functions + i;
 		int fpos = hl_jit_function(ctx, m, f);
 		if( fpos < 0 ) {
@@ -670,13 +686,14 @@ int hl_module_init( hl_module *m, h_bool hot_reload ) {
 		}
 		m->functions_ptrs[f->findex] = (void*)(int_val)fpos;
 	}
-	m->jit_code = hl_jit_code(ctx, m, &m->codesize, &m->jit_debug, NULL);
-	for(i=0;i<m->code->nfunctions;i++) {
+	m->jit.code = hl_jit_code(ctx, m, &m->jit.code_size, &m->debug, NULL);
+	for(int i=0;i<m->code->nfunctions;i++) {
 		hl_function *f = m->code->functions + i;
-		m->functions_ptrs[f->findex] = ((unsigned char*)m->jit_code) + ((int_val)m->functions_ptrs[f->findex]);
+		m->functions_ptrs[f->findex] = ((unsigned char*)m->jit.code) + ((int_val)m->functions_ptrs[f->findex]);
 	}
+	#endif
 	// INIT constants
-	for(i=0;i<m->code->nconstants;i++) {
+	for(int i=0;i<m->code->nconstants;i++) {
 		hl_constant *c = m->code->constants + i;
 		hl_module_init_constant(m, c);
 	}
@@ -687,19 +704,21 @@ int hl_module_init( hl_module *m, h_bool hot_reload ) {
 	hl_module_add(m);
 	hl_setup_exception(module_resolve_symbol, module_capture_stack);
 	hl_gc_set_dump_types(hl_module_types_dump);
+	#if 0
 	hl_jit_free(ctx, hot_reload);
 	if( hot_reload ) {
 		hl_code_hash_finalize(m->hash);
-		m->jit_ctx = ctx;
+		m->jit.ctx = ctx;
 	}
+	#endif
 	return 1;
 }
 
-h_bool hl_module_patch( hl_module *m1, hl_code *c ) {
+hl_bool hl_module_patch( hl_module *m1, hl_code *c ) {
 	int i,i1,i2;
 	bool has_changes = false;
 	int changes_count = 0;
-	jit_ctx *ctx = m1->jit_ctx;
+	jit_ctx *ctx = m1->jit.ctx;
 
 	hl_module *m2 = hl_module_alloc(c);
 	m2->hash = hl_code_hash_alloc(c);
@@ -844,24 +863,24 @@ h_bool hl_module_patch( hl_module *m1, hl_code *c ) {
 		}
 	}
 
-	m2->jit_code = hl_jit_code(ctx, m2, &m2->codesize, &m2->jit_debug, m1);
+	m2->jit.code = hl_jit_code(ctx, m2, &m2->jit.code_size, &m2->debug, m1);
 
 	// patch missing debug info
 	int start = -1;
-	if( m2->jit_debug ) {
+	if( m2->debug ) {
 		for(i=0;i<c->nfunctions;i++) {
-			if( m2->jit_debug[i].start < 0 ) {
-				m2->jit_debug[i].start = start;
-				m2->jit_debug[i].offsets = NULL;
+			if( m2->debug[i].start < 0 ) {
+				m2->debug[i].start = start;
+				m2->debug[i].offsets = NULL;
 			} else {
-				start = m2->jit_debug[i].start;
+				start = m2->debug[i].start;
 			}
 		}
 	}
 
 	hl_jit_free(ctx,true);
 
-	if( m2->jit_code == NULL ) {
+	if( m2->jit.code == NULL ) {
 		printf("[HotReload] Couldn't JIT result\n");
 		fflush(stdout);
 		return false;
@@ -871,7 +890,7 @@ h_bool hl_module_patch( hl_module *m1, hl_code *c ) {
 		hl_function *f2 = m2->code->functions + i;
 		if( m2->hash->functions_hashes[i] < -1 ) continue;
 		if( m2->functions_ptrs[f2->findex] == NULL ) continue;
-		void *ptr = ((unsigned char*)m2->jit_code) + ((int_val)m2->functions_ptrs[f2->findex]);
+		void *ptr = ((unsigned char*)m2->jit.code) + ((int_val)m2->functions_ptrs[f2->findex]);
 		m2->functions_ptrs[f2->findex] = ptr;
 		// update real function ptr
 		if( m2->hash->functions_hashes[i] < 0 ) continue;
@@ -908,20 +927,22 @@ void hl_module_free( hl_module *m ) {
 			hl_remove_root(m->globals_data+m->globals_indexes[i]);
 	}
 	hl_free(&m->ctx.alloc);
-	hl_free_executable_memory(m->code, m->codesize);
+	hl_free_executable_memory(m->code, m->jit.code_size);
 	if( m->hash ) hl_code_hash_free(m->hash);
 	free(m->functions_indexes);
 	free(m->functions_ptrs);
 	free(m->ctx.functions_types);
 	free(m->globals_indexes);
 	free(m->globals_data);
-	if( m->jit_debug ) {
+	if( m->debug ) {
 		int i;
 		for(i=0;i<m->code->nfunctions;i++)
-			free(m->jit_debug[i].offsets);
-		free(m->jit_debug);
+			free(m->debug[i].offsets);
+		free(m->debug);
 	}
-	if( m->jit_ctx )
-		hl_jit_free(m->jit_ctx,false);
+	if( m->interp.ctx )
+		hl_interp_free(m->interp.ctx, false);
+	if( m->jit.ctx )
+		hl_jit_free(m->jit.ctx,false);
 	free(m);
 }
