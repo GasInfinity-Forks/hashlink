@@ -54,3 +54,11 @@ node_modules
 /*.tgz
 args.txt
 /other/benchs/hlc
+
+# Zig
+!build.zig
+zig-out/
+zig-cache/
+
+# clang-d
+.cache/
