@@ -55,6 +55,7 @@ const hl_srcs = [_][]const u8{ "src/main.c", "src/jit.c", "src/interp.c", "src/c
 
 const global_c_flags = [_][]const u8{
     "-std=c11",
+    "-fno-sanitize-trap=undefined",
 };
 
 fn addGlobalIncludes(b: *std.Build, c: *std.Build.Step.Compile) void {
@@ -87,6 +88,7 @@ pub fn build(b: *std.Build) void {
     }
 
     addGlobalIncludes(b, hl_lib);
+    hl_lib.linkSystemLibrary("ubsan");
     hl_lib.addCSourceFiles(.{
         .files = &(switch (target.result.os.tag) {
             .ios => lhl_ios_srcs,
@@ -106,6 +108,7 @@ pub fn build(b: *std.Build) void {
 
     hl_exe.root_module.addRPathSpecial("$ORIGIN"); // TODO: Set rpath depending on option
     hl_exe.linkSystemLibrary("ffi");
+    hl_exe.linkSystemLibrary("ubsan");
     hl_exe.linkLibrary(hl_lib);
     addGlobalIncludes(b, hl_exe);
     hl_exe.addCSourceFiles(.{

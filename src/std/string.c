@@ -24,7 +24,7 @@
 HL_PRIM vbyte *hl_itos( int i, int *len ) {
 	uchar tmp[24];
 	int k = (int)usprintf(tmp,24,USTR("%d"),i);
-	*len = k;
+	memcpy(len, &k, sizeof(int));
 	return hl_copy_bytes((vbyte*)tmp,(k + 1)<<1);
 }
 
@@ -53,7 +53,7 @@ HL_PRIM vbyte *hl_ftos( double d, int *len ) {
 			}
 	}
 #	endif
-	*len = k;
+	memcpy(len, &k, sizeof(int));
 	return hl_copy_bytes((vbyte*)tmp,(k + 1) << 1);
 }
 

@@ -141,7 +141,7 @@ HL_PRIM vdynamic* hl_call_method( vdynamic *c, varray *args ) {
 	vdynamic **vargs = hl_aptr(args,vdynamic*);
 	void *pargs[HL_MAX_ARGS];
 	void *ret;
-	union { double d; int i; float f; int64 i64; } tmp[HL_MAX_ARGS];
+	union { void *p; double d; int i; float f; int64 i64; } tmp[HL_MAX_ARGS];
 	hl_type *tret;
 	vdynamic *dret;
 	vdynamic out;
@@ -189,7 +189,8 @@ HL_PRIM vdynamic* hl_call_method( vdynamic *c, varray *args ) {
 			p = &tmp[i].d;
 			break;
 		default:
-			p = hl_dyn_castp(vargs + i,&hlt_dyn,t);
+			tmp[i].p = hl_dyn_castp(vargs + i,&hlt_dyn,t);
+			p = &tmp[i].p;
 			break;
 		}
 		pargs[i] = p;

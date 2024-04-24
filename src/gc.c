@@ -819,7 +819,7 @@ static void gc_mark() {
 	gc_allocator_before_mark(mark_data);
 	// push roots
 	for(i=0;i<gc_roots_count;i++) {
-		void *p = *gc_roots[i];
+		void *p; memcpy(&p, gc_roots[i], sizeof(void*));
 		gc_pheader *page;
 		if( !p ) continue;
 		page = GC_GET_PAGE(p);

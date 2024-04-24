@@ -323,12 +323,14 @@ C_FUNCTION_END
 typedef uint8_t hl_ui8;
 typedef uint16_t hl_ui16;
 typedef int32_t hl_i32;
+typedef uint32_t hl_u32;
 typedef int64_t hl_i64;
+typedef uint64_t hl_u64;
 typedef float hl_f32;
 typedef double hl_f64;
 typedef unsigned char hl_bool;
 typedef void* hl_ref;
-typedef intmax_t hl_intmax;
+typedef size_t hl_usize;
 
 typedef enum {
 	HVOID	= 0,
@@ -877,7 +879,6 @@ typedef struct {
 #else
 #	define HL_NO_OPT
 #endif
-#define GC_PRINT_ALLOCS_SIZES
 // -------------- EXTRA ------------------------------------
 
 #define hl_fatal(msg)			hl_fatal_error(msg,__FILE__,__LINE__)
