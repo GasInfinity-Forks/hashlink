@@ -105,7 +105,7 @@ HL_PRIM int hl_dyn_casti( void *data, hl_type *t, hl_type *to ) {
 		return *(bool*)data;
 	case HNULL:
 		{
-			vdynamic *v = *(vdynamic**)data;
+			vdynamic *v; memcpy(&v, data, sizeof(vdynamic*));
 			if( v == NULL ) return 0;
 			return hl_dyn_casti(&v->v,t->tparam,to);
 		}
@@ -155,13 +155,11 @@ HL_PRIM int64 hl_dyn_casti64( void *data, hl_type *t ) {
 HL_PRIM void *hl_dyn_castp( void *data, hl_type *t, hl_type *to ) {
 	hl_track_call(HL_TRACK_CAST, on_cast(t,to));
 	if( to->kind == HDYN && hl_is_dynamic(t) ) {
-		vdynamic *v;
-		memcpy(&v, data, sizeof(vdynamic*));
+		vdynamic *v; memcpy(&v, data, sizeof(vdynamic*));
 		return v;
 	}
 	if( t->kind == HDYN || t->kind == HNULL ) {
-		vdynamic *v;
-		memcpy(&v, data, sizeof(vdynamic*));
+		vdynamic *v; memcpy(&v, data, sizeof(vdynamic*));
 		if( v == NULL )
 			return NULL;
 		if( to->kind == HNULL && v->t == to->tparam && hl_is_gc_ptr(v) )
@@ -169,13 +167,12 @@ HL_PRIM void *hl_dyn_castp( void *data, hl_type *t, hl_type *to ) {
 		t = v->t;
 		if( !hl_is_dynamic(t) ) data = &v->v;
 	} else if( hl_is_dynamic(t) ) {
-		vdynamic *v = *(vdynamic**)data;
+		vdynamic *v; memcpy(&v, data, sizeof(vdynamic*));
 		if( v == NULL ) return NULL;
 		t = v->t;
 	}
 	if( t == to || hl_safe_cast(t,to) ) {
-		void *v;
-		memcpy(&v, data, sizeof(void*));
+		void *v; memcpy(&v, data, sizeof(void*));
 		return v;
 	}
 	switch( TK2(t->kind,to->kind) ) {
@@ -191,7 +188,8 @@ HL_PRIM void *hl_dyn_castp( void *data, hl_type *t, hl_type *to ) {
 					break;
 				t1 = t1->super->obj;
 			}
-			if( t->obj->rt->castFun ) {
+
+			if( t->obj->rt->castFun ) { // FIXME
 				vdynamic *v = t->obj->rt->castFun(*(vdynamic**)data,to);
 				if( v ) return v;
 			}

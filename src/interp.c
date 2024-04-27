@@ -119,6 +119,37 @@ static inline hl_bool hl_type_can_be_null(hl_type *type) {
     }
 }
 
+static inline hl_bool hl_type_is_dynamic(hl_type *type) {
+    switch (type->kind) {
+        case HVOID:
+        case HUI8:
+        case HUI16:
+        case HI32:
+        case HI64:
+        case HF32:
+        case HF64:
+        case HBOOL:
+        case HBYTES:
+        case HTYPE:
+        case HREF:
+        case HABSTRACT:
+        case HMETHOD:
+        case HSTRUCT:
+        case HPACKED: return false;
+        default: return true;
+    }
+}
+
+static inline hl_bool hl_type_is_compatible(hl_type *src, hl_type *dst) {
+    if(dst->kind == HVOID)
+        return true;
+
+    if(dst->kind == HDYN)
+        return hl_type_is_dynamic(src);
+
+    return src->kind == dst->kind;
+}
+
 static inline hl_bool hl_type_is_int(hl_type *type) {
     switch (type->kind) {
         case HUI8:
@@ -141,9 +172,79 @@ static inline hl_bool hl_type_is_number(hl_type *type) {
     return hl_type_is_int(type) || hl_type_is_float(type);
 }
 
+static inline hl_bool hl_type_has_fields(hl_type *type) {
+    switch (type->kind) {
+        case HOBJ:
+        case HVIRTUAL:
+        case HDYNOBJ:
+        case HSTRUCT: return true;
+        default: return false;
+    }
+}
+
+static inline hl_bool hl_dyn_eq(vdynamic *a, vdynamic *b) {
+    if(a == b) {
+        return true;
+    }
+
+    if(!a || !b) {
+        return false;
+    }
+
+    hl_type *a_type = a->t;
+    hl_type *b_type = b->t;
+    switch (a->t->kind) {
+        case HUI8: return b_type->kind == HUI8 ? a->v.ui8 == b->v.ui8 : false;
+        case HUI16: return b_type->kind == HUI16 ? a->v.ui16 == b->v.ui16 : false;
+        case HI32: {
+            switch (b->t->kind) {
+                case HI32: return a->v.i == b->v.i;
+                case HF64: return ((hl_f64)a->v.i) == b->v.d;
+                default: return false;
+            }
+        }
+        case HI64: return b_type->kind == HI64 ? a->v.i64 == b->v.i64 : false;
+        case HF32: {
+            switch(b->t->kind) {
+                case HF32: return a->v.f == b->v.f;
+                case HF64: return ((hl_f64)a->v.f) == b->v.d;
+                default: return false;
+            }
+        }
+        case HF64: {
+            switch (b->t->kind) {
+                case HI32: return a->v.d == ((hl_f64)b->v.i);
+                case HF32: return a->v.d == ((hl_f64)b->v.f);
+                case HF64: return a->v.d == b->v.d;
+                default: return false;
+            }
+        }
+        case HOBJ:
+        case HSTRUCT: {
+            hl_runtime_obj *rt = a_type->obj->rt;
+            switch (b->t->kind) {
+                case HOBJ:
+                case HSTRUCT: return a == b; // TODO: Compare fun
+                case HVIRTUAL: return hl_dyn_eq(a, ((vvirtual*)b)->value);
+                default: return false;
+            }
+        }
+        case HVIRTUAL: {
+            switch (b_type->kind) {
+                case HOBJ:
+                case HDYNOBJ: return hl_dyn_eq(((vvirtual*)a)->value, b);
+                case HVIRTUAL: return hl_dyn_eq(((vvirtual*)a)->value, ((vvirtual*)b)->value);
+                default: return false;
+            }
+        }
+        default: return false;
+    }
+    return false;
+}
+
 void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *ret);
 void hl_interp_raw_function_call(interp_ctx *ctx, int findex, hl_usize nargs, vbyte **args, hl_type **args_types, vdynamic *ret);
-void hl_interp_native_ffi_call(interp_ctx *ctx, void (*fptr)(), hl_usize nargs, vbyte **args, hl_type **args_types, vdynamic *ret);
+void hl_interp_native_ffi_call(interp_ctx *ctx, hl_native *native, void (*fptr)(), hl_usize nargs, vbyte **args, hl_type **args_types, vdynamic *ret);
 void hl_interp_raw_bytecode_function_call(interp_ctx *ctx, hl_function *callee, hl_usize nargs, vbyte **args, hl_type **args_types, vdynamic *ret);
 
 static inline ffi_type *hl_type_to_ffi(hl_type *type) {
@@ -186,14 +287,19 @@ void hl_interp_raw_function_call(interp_ctx *ctx, int findex, hl_usize nargs, vb
         return hl_interp_raw_bytecode_function_call(ctx, hl_callee, nargs, args, args_types, ret);
     }
 
+    int native_findex = real_findex - code->nfunctions;
+    hl_native *native = &code->natives[native_findex];
     void(*fptr)() = m->functions_ptrs[findex];
-    return hl_interp_native_ffi_call(ctx, fptr, nargs, args, args_types, ret);
+    return hl_interp_native_ffi_call(ctx, native, fptr, nargs, args, args_types, ret);
 }
 
-void hl_interp_native_ffi_call(interp_ctx *ctx, void (*fptr)(), hl_usize nargs, vbyte **args, hl_type **args_types, vdynamic *ret) {
+void hl_interp_native_ffi_call(interp_ctx *ctx, hl_native *native, void (*fptr)(), hl_usize nargs, vbyte **args, hl_type **args_types, vdynamic *ret) {
     hl_module *m = ctx->m;
     hl_code *code = m->code;
-    hl_type *ret_type = ret->t;
+    hl_type *native_type = native->t;
+    hl_type_fun *native_fun_type = native_type->fun;
+    hl_type *ret_type = native_fun_type->ret;
+    ret->t = ret_type;
 
     ffi_cif cif;
     ffi_type **ffi_args_type = (ffi_type**)malloc(nargs * sizeof(ffi_type*)); // FIXME: mem pool?
@@ -215,11 +321,6 @@ void hl_interp_raw_bytecode_function_call(interp_ctx *ctx, hl_function *callee, 
     int real_findex = m->functions_indexes[callee->findex];
     hl_type_fun *callee_type = callee->type->fun;
     hl_type *callee_return_type = callee_type->ret;
-    hl_type *ret_type = ret->t;
-
-    if(ret_type->kind != callee_return_type->kind) {
-        HL_UNREACHABLE;
-    }
 
     int *function_regs_offsets = ctx->fregs_offsets[real_findex];
     int total_regs_size = function_regs_offsets[callee->nregs];
@@ -246,6 +347,11 @@ void hl_interp_raw_bytecode_function_call(interp_ctx *ctx, hl_function *callee, 
     }
 
     hl_interp_run(ctx, callee, regs_data, ret);
+
+    hl_type *ret_type = ret->t;
+    if(!hl_type_is_compatible(ret_type, callee_return_type)) {
+        HL_UNREACHABLE;
+    }
 
     if(regs_data)
         free(regs_data);
@@ -543,7 +649,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
 
                         hl_i32 result;
                         switch (opcode->op) {
-                            case OShl: result = a << b; break;
+                            case OShl: result = (hl_i32)(((hl_u32)a) << ((hl_u32)b)); break;
                             case OSShr: result = a >> b; break;
                             case OUShr: result = (hl_i32)(((hl_u32)a) >> ((hl_u32)b)); break;
                             case OAnd: result = a & b; break;
@@ -560,7 +666,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
 
                         hl_i64 result;
                         switch (opcode->op) {
-                            case OShl: result = a << b; break;
+                            case OShl: result = (hl_i64)(((hl_u64)a) << ((hl_u64)b)); break;
                             case OSShr: result = a >> b; break;
                             case OUShr: result = (hl_i64)(((hl_u64)a) >> ((hl_u64)b)); break;
                             case OAnd: result = a & b; break;
@@ -696,7 +802,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 hl_type *dst_reg_type = fregs[dst_reg_id];
                 vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
 
-                vdynamic callee_return = { .t = dst_reg_type };
+                vdynamic callee_return;
                 switch (opcode->op) {
                     case OCall0: {
                         hl_interp_raw_function_call(ctx, findex, 0, NULL, NULL, &callee_return);
@@ -760,22 +866,103 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                         break;
                     }
                 }
+
+                if(!hl_type_is_compatible(callee_return.t, dst_reg_type)) {
+                    HL_UNREACHABLE;
+                }
+
                 hl_copy_type_data(dst_reg_data, (vbyte*)&callee_return.v, dst_reg_type);
                 break;
             }
             case OCallMethod:
             case OCallThis: {
                 hl_bool is_reg0 = opcode->op == OCallThis;
+
                 int dst_reg_id = opcode->p1;
-                int src_reg_id = is_reg0 ? 0 : opcode->p2;
-                int src_field_index = is_reg0 ? opcode->p2 : opcode->p3;
+                int src_field_index = opcode->p2;
+                int args = opcode->p3 + (is_reg0 ? 1 : 0);
+                int src_reg_id = is_reg0 ? 0 : opcode->extra[0];
 
                 hl_type *dst_reg_type = fregs[dst_reg_id];
                 vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
                 hl_type *src_reg_type = fregs[src_reg_id];
                 vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
 
-                __builtin_trap(); // TODO!
+                if(!hl_type_has_fields(src_reg_type)) {
+                    HL_UNREACHABLE;
+                }
+
+                vdynamic callee_return;
+                switch (src_reg_type->kind) {
+                    case HOBJ: {
+                        vobj *obj; memcpy(&obj, src_reg_data, sizeof(void*));
+                        hl_type *obj_type = obj->t;
+
+                        void** proto = obj_type->vobj_proto;
+                        hl_function *proto_fun = (hl_function*)proto[src_field_index]; // May be a native?
+                        
+                        hl_type **args_types = (hl_type**)malloc(args * sizeof(hl_type*));
+                        vbyte **args_data = (vbyte**)malloc(args * sizeof(vbyte*));
+                        int current_arg = 0;
+
+                        if(is_reg0) {
+                            args_types[current_arg] = src_reg_type;
+                            args_data[current_arg] = (vbyte*)src_reg_data;
+                            ++current_arg;
+                        }
+
+                        for (int i = 0; current_arg < args; ++current_arg, ++i) {
+                            int reg_idx = opcode->extra[i];
+
+                            args_types[current_arg] = fregs[reg_idx];
+                            args_data[current_arg] = &reg_data[function_regs_offsets[reg_idx]];
+                        }
+
+                        hl_interp_raw_function_call(ctx, proto_fun->findex, args, args_data, args_types, &callee_return);
+
+                        free(args_types);
+                        free(args_data);
+                        break;
+                    }
+                    case HVIRTUAL: {
+                        vvirtual *virt; memcpy(&virt, src_reg_data, sizeof(void*));
+                        void *field = hl_vfields(virt)[src_field_index];
+                        hl_function *proto_fun = (hl_function*)field;
+
+                        if(field) {
+                            hl_type **args_types = (hl_type**)malloc(args * sizeof(hl_type*));
+                            vbyte **args_data = (vbyte**)malloc(args * sizeof(vbyte*));
+
+                            args_types[0] = virt->value->t;
+                            args_data[0] = (vbyte*)&virt->value;
+                            for (int i = 1; i < args; ++i) {
+                                int reg_idx = opcode->extra[i];
+
+                                args_types[i] = fregs[reg_idx];
+                                args_data[i] = &reg_data[function_regs_offsets[reg_idx]];
+                            }
+
+                            hl_interp_raw_function_call(ctx, proto_fun->findex, args, args_data, args_types, &callee_return);
+
+                            free(args_types);
+                            free(args_data);
+                            break;
+                        }
+
+                        __builtin_trap();
+                        break;
+                    }
+                    default: {
+                        HL_UNREACHABLE;
+                        break;
+                    }
+                }
+
+                if(!hl_type_is_compatible(callee_return.t, dst_reg_type)) {
+                    HL_UNREACHABLE;
+                }
+
+                hl_copy_type_data(dst_reg_data, (vbyte*)&callee_return.v, dst_reg_type);
                 break;
             }
             case OCallClosure: {
@@ -789,36 +976,35 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 hl_type *func_reg_type = fregs[func_reg_id];
                 vbyte *func_reg_data = &reg_data[function_regs_offsets[func_reg_id]];
 
+                vdynamic callee_return;
                 switch (func_reg_type->kind) {
                     case HDYN: {
                         __builtin_trap();
                     }
                     case HFUN: {
-                        vclosure *closure;
-                        memcpy(&closure, func_reg_data, sizeof(void*));
+                        vclosure *closure; memcpy(&closure, func_reg_data, sizeof(void*));
                         hl_function *closure_fun = (hl_function*)closure->fun; // TODO: This is not always an hl_function! It could be a native call
                         int closure_findex = closure_fun->findex;
 
                         hl_usize total_args = args + (closure->hasValue ? 1 : 0);
                         hl_usize current_arg = 0;
-                        hl_type **args_types = (hl_type**)malloc(args*sizeof(hl_type*));
-                        vbyte **args_data = (vbyte**)malloc(args*sizeof(vbyte*));
+                        hl_type **args_types = (hl_type**)malloc(total_args * sizeof(hl_type*));
+                        vbyte **args_data = (vbyte**)malloc(total_args * sizeof(vbyte*));
                         
                         if(closure->hasValue) {
                             args_types[current_arg] = &hlt_dyn;
-                            args_data[current_arg] = (vbyte*)closure->value;
+                            args_data[current_arg] = (vbyte*)&closure->value;
                             ++current_arg;
                         }
 
-                        for (; current_arg < args; ++current_arg) {
-                            int reg_idx = opcode->extra[current_arg];
+                        for (hl_usize i = 0; current_arg < total_args; ++i, ++current_arg) {
+                            int reg_idx = opcode->extra[i];
+
                             args_types[current_arg] = fregs[reg_idx];
                             args_data[current_arg] = &reg_data[function_regs_offsets[reg_idx]];
                         }
 
-                        vdynamic callee_return = { .t = dst_reg_type };
                         hl_interp_raw_function_call(ctx, closure_findex, total_args, args_data, args_types, &callee_return);
-                        hl_copy_type_data(dst_reg_data, (vbyte*)&callee_return.v, dst_reg_type);
 
                         free(args_types);
                         free(args_data);
@@ -829,6 +1015,35 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                         break;
                     }
                 }
+
+                if(!hl_type_is_compatible(callee_return.t, dst_reg_type)) {
+                    HL_UNREACHABLE;
+                }
+
+                hl_copy_type_data(dst_reg_data, (vbyte*)&callee_return.v, dst_reg_type);
+                break;
+            }
+            case OStaticClosure: {
+                int dst_reg_id = opcode->p1;
+                int findex = opcode->p2;
+                int real_findex = m->functions_indexes[findex];
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+
+                if(dst_reg_type->kind != HFUN) {
+                    HL_UNREACHABLE;
+                }
+
+                vclosure *c;
+                if(real_findex < code->nfunctions) {
+                    hl_function *f = &code->functions[real_findex];
+                    c = hl_alloc_closure_void(f->type, f);
+                } else {
+                    __builtin_trap();
+                }
+
+                memcpy(dst_reg_data, &c, sizeof(void*));
                 break;
             }
             case OInstanceClosure: {
@@ -853,6 +1068,42 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
 
                 vobj* obj; memcpy(&obj, obj_reg_data, sizeof(void*));
                 vclosure *closure = hl_alloc_closure_ptr(function_type, function, obj);
+                memcpy(dst_reg_data, &closure, sizeof(void*));
+                break;
+            }
+            case OVirtualClosure: {
+                int dst_reg_id = opcode->p1;
+                int obj_reg_id = opcode->p2;
+                int field_index = opcode->p3;
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+                hl_type *obj_reg_type = fregs[obj_reg_id];
+                vbyte *obj_reg_data = &reg_data[function_regs_offsets[obj_reg_id]];
+
+                if(obj_reg_type->kind != HOBJ) {
+                    HL_UNREACHABLE;
+                }
+
+                hl_type *current_obj_type = obj_reg_type;
+                hl_type *t = NULL;
+                while (!t) {
+                    hl_type_obj *obj_type = current_obj_type->obj;
+                    
+                    for(hl_usize i = 0; i < obj_type->nproto;i++) {
+						hl_obj_proto *proto = &obj_type->proto[i];
+						if(proto->pindex == field_index) {
+							t = m->code->functions[m->functions_indexes[proto->findex]].type;
+							break;
+						}
+					}
+
+					current_obj_type = obj_type->super;
+                }
+
+                vobj* obj; memcpy(&obj, obj_reg_data, sizeof(void*));
+                void *fproto = obj->t->vobj_proto[field_index];
+                vclosure *closure = hl_alloc_closure_ptr(t, fproto, obj);
                 memcpy(dst_reg_data, &closure, sizeof(void*));
                 break;
             }
@@ -920,7 +1171,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                             }
                         }
 
-                        if(dst_reg_type->kind != src_field_type->kind) {
+                        if(!hl_type_is_compatible(src_field_type, dst_reg_type)) {
                             HL_UNREACHABLE;
                         }
 
@@ -1027,8 +1278,8 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                         hl_runtime_obj *rt = hl_get_obj_rt(dst_reg_type);
                         hl_obj_field *dst_field = hl_obj_field_fetch(dst_reg_type, dst_field_index);
                         hl_type *dst_field_type = dst_field->t;
-
-                        if(src_reg_type->kind != dst_field_type->kind) {
+                        
+                        if(!hl_type_is_compatible(src_reg_type, dst_field_type)) {
                             HL_UNREACHABLE;
                         }
 
@@ -1041,7 +1292,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                     }
                     case HVIRTUAL: {
                         vvirtual *v; memcpy(&v, dst_reg_data, sizeof(void*));
-                        hl_obj_field *obj_field = &src_reg_type->virt->fields[dst_field_index];
+                        hl_obj_field *obj_field = &dst_reg_type->virt->fields[dst_field_index];
                         void** field = hl_vfields(v)[dst_field_index];
                         
                         if(obj_field->t->kind != src_reg_type->kind) {
@@ -1112,6 +1363,74 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 }
                 break;
             }
+            case ODynGet: {
+                int dst_reg_id = opcode->p1;
+                int src_reg_id = opcode->p2;
+                int field_name_string_index = opcode->p3;
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+                hl_type *src_reg_type = fregs[src_reg_id];
+                vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
+
+                if(!hl_type_has_fields(src_reg_type)) {
+                    HL_UNREACHABLE;
+                }
+
+                vdynamic *dyn; memcpy(&dyn, src_reg_data, sizeof(void*));
+
+                const uchar *field_name = hl_get_ustring(code, field_name_string_index);
+                int field_hash = hl_hash_gen(field_name, true);
+
+                switch (dst_reg_type->kind) {
+                    case HBOOL:
+                    case HUI8:
+                    case HUI16:
+                    case HI32: {
+                        hl_i32 v = hl_dyn_geti(dyn, field_hash, dst_reg_type);
+                        hl_copy_type_data(dst_reg_data, &v, dst_reg_type);
+                        break;
+                    }
+                    case HI64: {
+                        hl_i64 v = hl_dyn_geti64(dyn, field_hash);
+                        memcpy(dst_reg_data, &v, sizeof(hl_i64));
+                        break;
+                    }
+                    case HF32: {
+                        hl_f32 v = hl_dyn_getf(dyn, field_hash);
+                        memcpy(dst_reg_data, &v, sizeof(hl_f32));
+                        break;
+                    }
+                    case HF64: {
+                        hl_f64 v = hl_dyn_getd(dyn, field_hash);
+                        memcpy(dst_reg_data, &v, sizeof(hl_f64));
+                        break;
+                    }
+                    case HBYTES:
+                    case HDYN:
+                    case HFUN:
+                    case HOBJ:
+                    case HARRAY:
+                    case HTYPE:
+                    case HREF:
+                    case HVIRTUAL:
+                    case HDYNOBJ:
+                    case HABSTRACT:
+                    case HENUM:
+                    case HNULL:
+                    case HMETHOD:
+                    case HSTRUCT: {
+                        void *v = hl_dyn_getp(dyn, field_hash, dst_reg_type);
+                        memcpy(dst_reg_data, &v, sizeof(void*));
+                        break;
+                    }
+                    default: {
+                        HL_UNREACHABLE;
+                        break;
+                    }
+                }
+                break;
+            }
             case ODynSet: {
                 int dst_reg_id = opcode->p1;
                 int field_name_string_index = opcode->p2;
@@ -1122,7 +1441,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 hl_type *src_reg_type = fregs[src_reg_id];
                 vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
 
-                if(dst_reg_type->kind != HDYNOBJ) {
+                if(!hl_type_has_fields(dst_reg_type)) {
                     HL_UNREACHABLE;
                 }
                 
@@ -1225,7 +1544,9 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
             case OJSLte:
             case OJSGt:
             case OJULt:
-            case OJUGte: {
+            case OJUGte:
+            case OJNotLt:
+            case OJNotGte: {
                 int a_reg_id = opcode->p1;
                 int b_reg_id = opcode->p2;
                 int offset = opcode->p3;
@@ -1282,6 +1603,8 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                             case OJSGte: result = a >= b; break;
                             case OJSLte: result = a <= b; break;
                             case OJSGt: result = a > b; break;
+                            case OJNotLt: result = !(a < b); break;
+                            case OJNotGte: result = !(a >= b); break;
                             default: HL_UNREACHABLE; break;
                         }
                         break;
@@ -1295,6 +1618,8 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                             case OJSGte: result = a >= b; break;
                             case OJSLte: result = a <= b; break;
                             case OJSGt: result = a > b; break;
+                            case OJNotLt: result = !(a < b); break;
+                            case OJNotGte: result = !(a >= b); break;
                             default: HL_UNREACHABLE; break;
                         }
                         break;
@@ -1309,10 +1634,6 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                     current_op += offset;
                 }
                 break;
-            }
-            case OJNotLt:
-            case OJNotGte: {
-                __builtin_trap(); // What are these for, signed, unsigned, what??
             }
             case OJNotEq:
             case OJEq: {
@@ -1367,15 +1688,50 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                         case HBYTES:
                         case HDYN:
                         case HFUN:
-                        case HOBJ:
-                        case HARRAY:
-                        case HTYPE:
+                        case HOBJ: {
+                            vobj *a; memcpy(&a, a_reg_data, sizeof(void*));
+                            vobj *b; memcpy(&b, b_reg_data, sizeof(void*));
+                            result = a == b; // TODO: Compare fun
+                            break;
+                        }
+                        case HARRAY: {
+                            __builtin_trap();
+                            break;
+                        }
+                        case HTYPE: {
+                            if(b_reg_type->kind != HTYPE) {
+                                HL_UNREACHABLE;
+                            }
+
+                            hl_type *a; memcpy(&a, a_reg_data, sizeof(void*));
+                            hl_type *b; memcpy(&b, b_reg_data, sizeof(void*));
+                            result = hl_same_type(a, b);
+                            break;
+                        }
                         case HREF:
                         case HVIRTUAL:
                         case HDYNOBJ:
-                        case HABSTRACT:
-                        case HENUM:
-                        case HNULL:
+                        case HABSTRACT: {
+                            void *a; memcpy(&a, a_reg_data, sizeof(void*));
+                            void *b; memcpy(&b, b_reg_data, sizeof(void*));
+
+                            result = a == b;
+                            break;
+                        }
+                        case HENUM: {
+                            __builtin_trap();
+                            break;
+                        }
+                        case HNULL: {
+                            if(b_reg_type->kind != HNULL || a_reg_type->tparam->kind != b_reg_type->tparam->kind) {
+                                HL_UNREACHABLE;
+                            }
+
+                            vdynamic *a; memcpy(&a, a_reg_data, sizeof(void*));
+                            vdynamic *b; memcpy(&b, b_reg_data, sizeof(void*));
+                            result = hl_dyn_eq(a, b);
+                            break;
+                        }
                         case HMETHOD:
                         case HSTRUCT: {
                             __builtin_trap(); // TODO
@@ -1557,6 +1913,96 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 }
                 break;
             }
+            case OToInt: {
+                int dst_reg_id = opcode->p1;
+                int src_reg_id = opcode->p2;
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+                hl_type *src_reg_type = fregs[src_reg_id];
+                vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
+
+                if(!hl_type_is_number(src_reg_type) || !hl_type_is_int(dst_reg_type)) {
+                    HL_UNREACHABLE;
+                }
+
+                switch (dst_reg_type->kind) {
+                    case HUI8:
+                    case HUI16:
+                    case HI32: {
+                        hl_i32 result;
+
+                        switch (src_reg_type->kind) {
+                            case HUI8:
+                            case HUI16:
+                            case HI32: {
+                                hl_copy_type_data(&result, src_reg_data, src_reg_type);
+                                break;
+                            }
+                            case HI64: {
+                                hl_i64 v; memcpy(&v, src_reg_data, sizeof(hl_i64));
+                                result = (hl_i32)v;
+                                break;
+                            }
+                            case HF32: {
+                                hl_f32 v; memcpy(&v, src_reg_data, sizeof(hl_f32));
+                                result = (hl_f32)v;
+                                break;
+                            }
+                            case HF64: {
+                                hl_f64 v; memcpy(&v, src_reg_data, sizeof(hl_f64));
+                                result = (hl_f64)v;
+                                break;
+                            }
+                            default: {
+                                HL_UNREACHABLE;
+                                break;
+                            }
+                        }
+
+                        hl_copy_type_data(dst_reg_data, &result, dst_reg_type);
+                        break;
+                    }
+                    case HI64: {
+                        hl_i64 result;
+
+                        switch (src_reg_type->kind) {
+                            case HUI8:
+                            case HUI16:
+                            case HI32: {
+                                hl_i32 v; hl_copy_type_data(&v, src_reg_data, src_reg_type);
+                                result = (hl_i64)v;
+                                break;
+                            }
+                            case HI64: {
+                                memcpy(&result, src_reg_data, sizeof(hl_i64));
+                                break;
+                            }
+                            case HF32: {
+                                hl_f32 v; memcpy(&v, src_reg_data, sizeof(hl_f32));
+                                result = (hl_f32)v;
+                                break;
+                            }
+                            case HF64: {
+                                hl_f64 v; memcpy(&v, src_reg_data, sizeof(hl_f64));
+                                result = (hl_f64)v;
+                                break;
+                            }
+                            default: {
+                                HL_UNREACHABLE;
+                                break;
+                            }
+                        }
+
+                        memcpy(dst_reg_data, &result, sizeof(hl_i64));
+                        break;
+                    }
+                    default: {
+                        HL_UNREACHABLE;
+                    }
+                }
+                break;
+            }
             case OSafeCast: {
                 int dst_reg_id = opcode->p1;
                 int src_reg_id = opcode->p2;
@@ -1615,6 +2061,22 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 }
                 break;
             }
+            case OUnsafeCast: {
+                int dst_reg_id = opcode->p1;
+                int src_reg_id = opcode->p2;
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+                hl_type *src_reg_type = fregs[src_reg_id];
+                vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
+                
+                //if(!hl_type_is_compatible(src_reg_type, dst_reg_type)) {
+                //    HL_UNREACHABLE;
+                //}
+
+                hl_copy_type_data(dst_reg_data, src_reg_data, dst_reg_type);
+                break;
+            }
             case OToVirtual: {
                 int dst_reg_id = opcode->p1;
                 int src_reg_id = opcode->p2;
@@ -1648,10 +2110,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 hl_type *src_reg_type = fregs[src_reg_id];
                 vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
 
-                if(ret_type->kind != src_reg_type->kind) {
-                    HL_UNREACHABLE;
-                }
-
+                ret->t = src_reg_type;
                 hl_copy_type_data(&ret->v, src_reg_data, src_reg_type);
                 goto function_interp_end;
             }
@@ -1668,7 +2127,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                     HL_UNREACHABLE;
                 }
 
-                hl_usize index; hl_copy_type_data_until(&index, src_reg_data, src_reg_type, sizeof(hl_usize));
+                hl_usize index = 0; hl_copy_type_data_until(&index, src_reg_data, src_reg_type, sizeof(hl_usize));
 
                 if(index < offsets_length) {
                     current_op += offsets[index];
@@ -1690,9 +2149,63 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 void *data; memcpy(&data, check_reg_data, sizeof(void*));
 
                 if(!data) {
-                    hl_interp_error("NULL CHECK FAILED!"); // Throw instead of aborting
+                    raise(SIGTRAP);
+                    //hl_interp_error("NULL CHECK FAILED!"); // Throw instead of aborting
                 }
 
+                break;
+            }
+            case OGetI8:
+            case OGetI16:
+            case OGetMem: {
+                int dst_reg_id = opcode->p1;
+                int src_reg_id = opcode->p2;
+                int src_index_reg_id = opcode->p3;
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+
+                hl_type *src_offset_reg_type = fregs[src_index_reg_id];
+                vbyte *src_offset_reg_data = &reg_data[function_regs_offsets[src_index_reg_id]];
+
+                hl_type *src_reg_type = fregs[src_reg_id];
+                vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
+
+                if(src_reg_type->kind != HBYTES || !hl_type_is_int(src_offset_reg_type) || !hl_type_is_number(dst_reg_type) || dst_reg_type->kind == HI64) {
+                    HL_UNREACHABLE;
+                }
+
+                vbyte* bytes; memcpy(&bytes, src_reg_data, sizeof(void*));
+                hl_usize offset = 0; hl_copy_type_data_until(&offset, src_offset_reg_data, src_offset_reg_type, sizeof(hl_usize));
+
+                switch (opcode->op) {
+                    case OGetI8:
+                    case OGetI16: {
+                        if(!hl_type_is_int(dst_reg_type)) {
+                            HL_UNREACHABLE;
+                        }
+
+                        if(opcode->op == OGetI8) {
+                            memcpy(dst_reg_type, &bytes[offset], sizeof(hl_ui8));
+                            break;
+                        }
+
+                        memcpy(dst_reg_type, &bytes[offset], sizeof(hl_ui16));
+                        break;
+                    }
+                    case OGetMem: {
+                        if(!hl_type_is_number(dst_reg_type)) {
+                            HL_UNREACHABLE;
+                        }
+
+                        hl_copy_type_data(dst_reg_data, &bytes[offset], dst_reg_type);
+                        break;
+                    }
+                    default: {
+                        HL_UNREACHABLE;
+                        break;
+                    }
+                }
                 break;
             }
             case OGetArray: {
@@ -1725,7 +2238,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
 
                         hl_type *array_type = array->at;
 
-                        if(array_type->kind != dst_reg_type->kind) {
+                        if(!hl_type_is_compatible(array_type, dst_reg_type)) {
                             HL_UNREACHABLE;
                         }
 
@@ -1822,7 +2335,7 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                         varray *array; memcpy(&array, dst_reg_data, sizeof(void*));
                         hl_type *array_type = array->at;
 
-                        if(array_type->kind != src_reg_type->kind) {
+                        if(!hl_type_is_compatible(src_reg_type, array_type)) {
                             HL_UNREACHABLE;
                         }
 
@@ -1874,10 +2387,11 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 break;
             }
             case OType: {
-                int dst_reg = opcode->p1;
+                int dst_reg_id = opcode->p1;
                 int type_index = opcode->p2;
-                hl_type *dst_reg_type = fregs[dst_reg];
-                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg]];
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
 
                 hl_type *code_type = &code->types[type_index];
 
@@ -1886,6 +2400,42 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 }
 
                 memcpy(dst_reg_data, &code_type, sizeof(hl_type*));
+                break;
+            }
+            case OGetType: {
+                int dst_reg_id = opcode->p1;
+                int src_reg_id = opcode->p2;
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+                hl_type *src_reg_type = fregs[src_reg_id];
+                vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
+
+                if(dst_reg_type->kind != HTYPE || !hl_type_is_dynamic(src_reg_type)) {
+                    HL_UNREACHABLE;
+                }
+
+                vdynamic *v; memcpy(&v, src_reg_data, sizeof(void*));
+                hl_type *t = v->t;
+                memcpy(dst_reg_data, &t, sizeof(hl_type*));
+                break;
+            }
+            case OGetTID: {
+                int dst_reg_id = opcode->p1;
+                int src_reg_id = opcode->p2;
+
+                hl_type *dst_reg_type = fregs[dst_reg_id];
+                vbyte *dst_reg_data = &reg_data[function_regs_offsets[dst_reg_id]];
+                hl_type *src_reg_type = fregs[src_reg_id];
+                vbyte *src_reg_data = &reg_data[function_regs_offsets[src_reg_id]];
+
+                if(dst_reg_type->kind != HI32 || src_reg_type->kind != HTYPE) {
+                    HL_UNREACHABLE;
+                }
+
+                hl_type *t; memcpy(&t, src_reg_data, sizeof(void*));
+                hl_i32 tid = t->kind;
+                memcpy(dst_reg_data, &tid, sizeof(hl_i32));
                 break;
             }
             case ORef: { // TODO: Check if ref is compatible with type
@@ -2010,8 +2560,8 @@ void *hl_interp_run(interp_ctx *ctx, hl_function *f, vbyte* reg_data, vdynamic *
                 break;
             }
             default: {
-                hl_interp_error(hl_op_name(opcode->op));
-                HL_UNREACHABLE;
+                printf("Opcode '%s' in function %u position %zx\n", hl_op_name(opcode->op), f->findex, current_op);
+                raise(SIGTRAP);
                 break;
             }
         } // switch
@@ -2037,8 +2587,7 @@ void *hl_interp_callback_c2hl(void *fun, hl_type *t, void **args, vdynamic *out)
     hl_usize nargs = fun_type->nargs;
     hl_type **args_types = fun_type->args;
 
-    out->t = fun_type->ret; // out type is not initialized
-    hl_interp_raw_function_call(ctx, findex, nargs, (vbyte**)args, args_types, out); // TODO: args!
+    hl_interp_raw_function_call(ctx, findex, nargs, (vbyte**)args, args_types, out);
     return out;
 }
 

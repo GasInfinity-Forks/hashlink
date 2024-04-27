@@ -478,15 +478,15 @@ typedef struct {
 	int __pad; // force align on 16 bytes for double
 #	endif
 	union {
-		bool b;
-		unsigned char ui8;
-		unsigned short ui16;
-		int i;
-		float f;
-		double d;
+		hl_bool b;
+		hl_ui8 ui8;
+		hl_ui16 ui16;
+		hl_i32 i;
+		hl_i64 i64;
+		hl_f32 f;
+		hl_f64 d;
 		vbyte *bytes;
 		void *ptr;
-		int64 i64;
 	} v;
 } vdynamic;
 
